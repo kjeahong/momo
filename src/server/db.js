@@ -1,6 +1,9 @@
 import initSqlJs from 'sql.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR)) {
@@ -14,7 +17,22 @@ let db = null;
 
 export async function getDb() {
   if (!SQL) {
-    SQL = await initSqlJs();
+    let wasmBinary = undefined;
+    try {
+      const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm');
+      wasmBinary = fs.readFileSync(wasmPath);
+    } catch (e) {}
+
+    SQL = await initSqlJs({
+      wasmBinary,
+      locateFile: file => {
+        try {
+          return require.resolve(`sql.js/dist/${file}`);
+        } catch (e) {
+          return file;
+        }
+      }
+    });
   }
   if (!db) {
     if (fs.existsSync(DB_PATH)) {
@@ -77,6 +95,7 @@ export async function initDb() {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       parent_id TEXT DEFAULT '',
+      order_index INTEGER DEFAULT 0,
       created_time INTEGER NOT NULL,
       updated_time INTEGER NOT NULL
     );
@@ -105,6 +124,11 @@ export async function initDb() {
       created_time INTEGER NOT NULL
     );
   `);
+
+  try {
+    db.run("ALTER TABLE folders ADD COLUMN order_index INTEGER DEFAULT 0;");
+  } catch (e) {}
+
   saveDb();
 }
 
@@ -118,38 +142,41 @@ export function resetToCleanState() {
 
   const now = Date.now();
   runSql(`
-    INSERT INTO folders (id, title, parent_id, created_time, updated_time)
-    VALUES (?, ?, ?, ?, ?)
-  `, ['default', '기본 노트북', '', now, now]);
+    INSERT INTO folders (id, title, parent_id, order_index, created_time, updated_time)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, ['default', '기본 노트북', '', 0, now, now]);
 
   runSql(`
-    INSERT INTO folders (id, title, parent_id, created_time, updated_time)
-    VALUES (?, ?, ?, ?, ?)
-  `, ['work', '업무 및 프로젝트', '', now, now]);
+    INSERT INTO folders (id, title, parent_id, order_index, created_time, updated_time)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, ['work', '업무 및 프로젝트', '', 1, now, now]);
 
   runSql(`
-    INSERT INTO folders (id, title, parent_id, created_time, updated_time)
-    VALUES (?, ?, ?, ?, ?)
-  `, ['daily', '일상 & 스크랩', '', now, now]);
+    INSERT INTO folders (id, title, parent_id, order_index, created_time, updated_time)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, ['work_sub', '↳ 프로젝트 회의록 (하위)', 'work', 0, now, now]);
+
+  runSql(`
+    INSERT INTO folders (id, title, parent_id, order_index, created_time, updated_time)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, ['daily', '일상 & 스크랩', '', 2, now, now]);
 
   // Sample Note 1
   const note1Id = 'note_guide';
-  const title1 = '📌 Momo 빠른 시작 & 검색 안내';
+  const title1 = '📌 Momo 빠른 시작 & 사용 팁';
   const body1 = `# Momo 빠른 시작 가이드
 
 Joplin의 익숙한 사용감 그대로, 어디에 적었든 원하는 내용을 1초 만에 찾아주는 스마트 메모앱입니다.
 
-### 🔍 검색 테스트 방법
-1. 우측 상단 검색창에 **"가이드"**, **"단축키"**, **"검색"** 등을 입력해 보세요.
-2. 제목과 본문에서 찾은 위치를 정확하게 하이라이트해 보여줍니다.
-3. 한국어 2글자 단어나 조사가 붙은 단어도 누락 없이 깔끔하게 찾아냅니다.
+### ✨ 새로운 기능: 노트북 관리 & 리사이즈
+1. **하위 노트북(폴더) 생성**: 노트북 옆의 \`+\` 버튼 또는 노트북 우클릭을 통해 하위 폴더를 자유롭게 만들 수 있습니다.
+2. **이름 변경 & 삭제**: 노트북에 마우스를 올리면 나타나는 ✏️ 버튼이나 우클릭으로 언제든 노트북 제목을 수정할 수 있습니다.
+3. **열 크기 조절**: 사이드바와 메모 목록 사이의 경계선을 마우스로 드래그하여 원하는 너비로 자유롭게 조절하세요!
+4. **마크다운 본문 드래그 & 복사**: 오른쪽 뷰어의 글을 자유롭게 마우스로 긁어서 복사(Ctrl+C)할 수 있습니다.
 
-### 📝 주요 기능
-- **[+ 새 메모]**: 상단 버튼으로 즉시 작성
-- **[+ 새 할일]**: 체크리스트 메모 생성
-- **Joplin 라이트 테마 배색**: 눈이 편안한 Joplin 클래식 디자인
-
-자유롭게 메모를 작성하고 초고속 검색을 체감해 보세요!
+### 🔍 검색 팁
+- 우측 상단 검색창에 **"가이드"**, **"노트북"**, **"단축키"** 등을 입력해 보세요.
+- 제목과 본문에서 찾은 위치를 정확하게 하이라이트해 보여줍니다.
 `;
 
   runSql(`
@@ -172,6 +199,7 @@ Joplin의 익숙한 사용감 그대로, 어디에 적었든 원하는 내용을
    - 제목 일치 가중치를 최우선으로 하여 엉뚱한 결과가 섞이지 않도록 정렬.
 2. **독립 데스크톱 실행**:
    - 도스창 없이 아이콘을 더블클릭하면 즉시 실행되는 네이티브 창 지원.
+   - 열 너비 자유 조절 및 마크다운 텍스트 복사/드래그 지원.
 
 > 다음 회의 일정: 다음 주 수요일 오후 2시
 `;
@@ -179,7 +207,7 @@ Joplin의 익숙한 사용감 그대로, 어디에 적었든 원하는 내용을
   runSql(`
     INSERT INTO notes (id, folder_id, title, body, image_text, created_time, updated_time, is_pinned)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `, [note2Id, 'work', title2, body2, '', now - 1000 * 60 * 30, now - 1000 * 60 * 30, 0]);
+  `, [note2Id, 'work_sub', title2, body2, '', now - 1000 * 60 * 30, now - 1000 * 60 * 30, 0]);
 
   saveDb();
 }
@@ -223,8 +251,12 @@ export function searchNotes(query = '', folderId = '') {
     let sql = 'SELECT * FROM notes';
     const params = [];
     if (folderId) {
-      sql += ' WHERE folder_id = ?';
-      params.push(folderId);
+      // Also match notes in sub-folders!
+      const subFolders = queryAll('SELECT id FROM folders WHERE parent_id = ?', [folderId]);
+      const allFolderIds = [folderId, ...subFolders.map(s => s.id)];
+      const placeholders = allFolderIds.map(() => '?').join(',');
+      sql += ` WHERE folder_id IN (${placeholders})`;
+      params.push(...allFolderIds);
     }
     sql += ' ORDER BY is_pinned DESC, updated_time DESC';
 
@@ -270,8 +302,11 @@ export function searchNotes(query = '', folderId = '') {
   ];
 
   if (folderId) {
-    sql += ' AND folder_id = ?';
-    params.push(folderId);
+    const subFolders = queryAll('SELECT id FROM folders WHERE parent_id = ?', [folderId]);
+    const allFolderIds = [folderId, ...subFolders.map(s => s.id)];
+    const placeholders = allFolderIds.map(() => '?').join(',');
+    sql += ` AND folder_id IN (${placeholders})`;
+    params.push(...allFolderIds);
   }
 
   sql += ' ORDER BY relevance_score DESC, is_pinned DESC, updated_time DESC';

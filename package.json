@@ -24,6 +24,7 @@
       "dist/**/*",
       "src/server/**/*",
       "src/electron/**/*",
+      "build/**/*",
       "package.json"
     ],
     "win": {

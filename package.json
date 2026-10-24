@@ -8,14 +8,15 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "server": "node src/server/index.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\"",
-    "app": "electron src/electron/main.cjs",
-    "dist": "npm run build && electron-builder"
+    "app": "electron .",
+    "dist": "npm run build && electron-builder --win --dir",
+    "pack": "electron-builder --win --dir"
   },
   "build": {
     "appId": "com.momo.notes",
     "productName": "Momo",
+    "executableName": "Momo",
+    "asar": false,
     "directories": {
       "output": "release"
     },
@@ -27,14 +28,18 @@
     ],
     "win": {
       "target": [
-        "nsis",
-        "portable"
-      ]
+        "portable",
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
+    },
+    "portable": {
+      "artifactName": "Momo-Portable.exe"
     }
   },
   "keywords": [
@@ -57,6 +62,7 @@
     "multer": "^1.4.5-lts.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "sql.js": "^1.15.1",
     "tailwind-merge": "^3.0.2",
     "tesseract.js": "^6.0.0"
   },

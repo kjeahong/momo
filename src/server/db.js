@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import initSqlJs from 'sql.js';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -8,10 +8,71 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 const DB_PATH = path.join(DATA_DIR, 'momo.sqlite');
-export const db = new DatabaseSync(DB_PATH);
 
-export function initDb() {
-  db.exec(`
+let SQL = null;
+let db = null;
+
+export async function getDb() {
+  if (!SQL) {
+    SQL = await initSqlJs();
+  }
+  if (!db) {
+    if (fs.existsSync(DB_PATH)) {
+      try {
+        const fileBuffer = fs.readFileSync(DB_PATH);
+        db = new SQL.Database(fileBuffer);
+      } catch (e) {
+        db = new SQL.Database();
+      }
+    } else {
+      db = new SQL.Database();
+    }
+    await initDb();
+    ensureDefaultFolder();
+  }
+  return db;
+}
+
+export function saveDb() {
+  if (!db) return;
+  try {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  } catch (err) {
+    console.error('Failed to save DB to disk:', err);
+  }
+}
+
+// Helper: Query all rows as array of objects
+export function queryAll(sql, params = []) {
+  if (!db) return [];
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+}
+
+// Helper: Query single row as object
+export function queryOne(sql, params = []) {
+  const rows = queryAll(sql, params);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+// Helper: Run statement and save
+export function runSql(sql, params = []) {
+  if (!db) return;
+  db.run(sql, params);
+  saveDb();
+}
+
+export async function initDb() {
+  if (!db) await getDb();
+  db.run(`
     CREATE TABLE IF NOT EXISTS folders (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -44,31 +105,32 @@ export function initDb() {
       created_time INTEGER NOT NULL
     );
   `);
+  saveDb();
 }
 
-// Reset to clean fresh state
 export function resetToCleanState() {
-  db.exec(`
+  if (!db) return;
+  db.run(`
     DELETE FROM notes;
     DELETE FROM folders;
     DELETE FROM resources;
   `);
 
   const now = Date.now();
-  db.prepare(`
+  runSql(`
     INSERT INTO folders (id, title, parent_id, created_time, updated_time)
     VALUES (?, ?, ?, ?, ?)
-  `).run('default', '기본 노트북', '', now, now);
+  `, ['default', '기본 노트북', '', now, now]);
 
-  db.prepare(`
+  runSql(`
     INSERT INTO folders (id, title, parent_id, created_time, updated_time)
     VALUES (?, ?, ?, ?, ?)
-  `).run('work', '업무 및 프로젝트', '', now, now);
+  `, ['work', '업무 및 프로젝트', '', now, now]);
 
-  db.prepare(`
+  runSql(`
     INSERT INTO folders (id, title, parent_id, created_time, updated_time)
     VALUES (?, ?, ?, ?, ?)
-  `).run('daily', '일상 & 스크랩', '', now, now);
+  `, ['daily', '일상 & 스크랩', '', now, now]);
 
   // Sample Note 1
   const note1Id = 'note_guide';
@@ -82,18 +144,18 @@ Joplin의 익숙한 사용감 그대로, 어디에 적었든 원하는 내용을
 2. 제목과 본문에서 찾은 위치를 정확하게 하이라이트해 보여줍니다.
 3. 한국어 2글자 단어나 조사가 붙은 단어도 누락 없이 깔끔하게 찾아냅니다.
 
-### 📝 주요 단축키
-- **Ctrl + N**: 새 메모 작성
-- **Ctrl + S**: 즉시 저장
-- **Ctrl + F**: 검색창으로 이동
+### 📝 주요 기능
+- **[+ 새 메모]**: 상단 버튼으로 즉시 작성
+- **[+ 새 할일]**: 체크리스트 메모 생성
+- **Joplin 라이트 테마 배색**: 눈이 편안한 Joplin 클래식 디자인
 
-상단의 [+ 새 메모] 버튼을 눌러 자유롭게 메모를 작성하고 검색해 보세요!
+자유롭게 메모를 작성하고 초고속 검색을 체감해 보세요!
 `;
 
-  db.prepare(`
+  runSql(`
     INSERT INTO notes (id, folder_id, title, body, image_text, created_time, updated_time, is_pinned)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(note1Id, 'default', title1, body1, '', now, now, 1);
+  `, [note1Id, 'default', title1, body1, '', now, now, 1]);
 
   // Sample Note 2
   const note2Id = 'note_sample_meeting';
@@ -102,33 +164,33 @@ Joplin의 익숙한 사용감 그대로, 어디에 적었든 원하는 내용을
 
 - **일시**: 2026년 10월 24일
 - **참석자**: 기획팀, 개발팀
-- **핵심 목표**: Joplin 사용자들을 위한 초고속 한국어 검색 및 이미지 OCR 메모 시스템 완성
+- **핵심 목표**: Joplin 사용자들을 위한 초고속 한국어 검색 및 단독 데스크톱 메모 시스템 완성
 
 ### 논의 내용
 1. **검색 엔진 개선**:
    - 키워드 타이핑 시 입력 렉(한글 끊김)을 100% 제거하고 부드러운 반응속도 확보.
    - 제목 일치 가중치를 최우선으로 하여 엉뚱한 결과가 섞이지 않도록 정렬.
-2. **UI/UX 만족도**:
-   - Joplin의 클래식 라이트 테마 배색(다크 슬레이트 사이드바 + 깨끗한 화이트 노트 목록과 에디터)을 적용하여 눈의 피로를 최소화.
+2. **독립 데스크톱 실행**:
+   - 도스창 없이 아이콘을 더블클릭하면 즉시 실행되는 네이티브 창 지원.
 
 > 다음 회의 일정: 다음 주 수요일 오후 2시
 `;
 
-  db.prepare(`
+  runSql(`
     INSERT INTO notes (id, folder_id, title, body, image_text, created_time, updated_time, is_pinned)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(note2Id, 'work', title2, body2, '', now - 1000 * 60 * 30, now - 1000 * 60 * 30, 0);
+  `, [note2Id, 'work', title2, body2, '', now - 1000 * 60 * 30, now - 1000 * 60 * 30, 0]);
+
+  saveDb();
 }
 
-// Ensure at least default notebook exists
 export function ensureDefaultFolder() {
-  const count = db.prepare('SELECT count(*) as count FROM folders').get().count;
-  if (count === 0) {
+  const countRow = queryOne('SELECT count(*) as count FROM folders');
+  if (!countRow || countRow.count === 0) {
     resetToCleanState();
   }
 }
 
-// Helper: Extract contextual snippet around keyword
 function extractSnippet(text, query, maxLen = 70) {
   if (!text) return '';
   const cleanText = text.replace(/[#*`>~-]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -148,18 +210,15 @@ function extractSnippet(text, query, maxLen = 70) {
   return snippet;
 }
 
-// Helper: Highlight query in text
 function highlightText(text, query) {
   if (!text || !query) return text || '';
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark class="bg-yellow-200 text-slate-900 px-0.5 rounded font-medium">$1</mark>');
 }
 
-// Smart Ranked Search Engine
 export function searchNotes(query = '', folderId = '') {
   const trimmed = query.trim();
 
-  // Mode 1: No Search -> List notes in folder
   if (!trimmed) {
     let sql = 'SELECT * FROM notes';
     const params = [];
@@ -169,7 +228,7 @@ export function searchNotes(query = '', folderId = '') {
     }
     sql += ' ORDER BY is_pinned DESC, updated_time DESC';
 
-    const list = db.prepare(sql).all(...params);
+    const list = queryAll(sql, params);
     return list.map(n => ({
       ...n,
       snippet: extractSnippet(n.body, '', 70),
@@ -177,8 +236,6 @@ export function searchNotes(query = '', folderId = '') {
     }));
   }
 
-  // Mode 2: Keyword Search -> Strict relevance scoring
-  // Prioritize Title Match > Body Match > Image Match
   const containsPattern = `%${trimmed}%`;
   const startsWithPattern = `${trimmed}%`;
 
@@ -219,7 +276,7 @@ export function searchNotes(query = '', folderId = '') {
 
   sql += ' ORDER BY relevance_score DESC, is_pinned DESC, updated_time DESC';
 
-  const results = db.prepare(sql).all(...params);
+  const results = queryAll(sql, params);
 
   return results.map(r => {
     let matchType = 'body';

@@ -1,8 +1,8 @@
-import { DatabaseSync } from 'node:sqlite';
+import initSqlJs from 'sql.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { db } from './db.js';
+import { runSql } from './db.js';
 
 export function getDefaultJoplinPaths() {
   const home = os.homedir();
@@ -19,7 +19,7 @@ export function getDefaultJoplinPaths() {
   };
 }
 
-export function importFromJoplin(customDbPath = null, customResDir = null, onProgress = null) {
+export async function importFromJoplin(customDbPath = null, customResDir = null) {
   const defaults = getDefaultJoplinPaths();
   const joplinDbPath = customDbPath || defaults.dbPath;
   const joplinResDir = customResDir || defaults.resDir;
@@ -29,88 +29,61 @@ export function importFromJoplin(customDbPath = null, customResDir = null, onPro
   }
 
   const startTime = Date.now();
-  const joplinDb = new DatabaseSync(joplinDbPath, { readOnly: true });
+  const SQL = await initSqlJs();
+  const fileBuffer = fs.readFileSync(joplinDbPath);
+  const joplinDb = new SQL.Database(fileBuffer);
 
-  // 1. Import Folders
-  const folders = joplinDb.prepare(`
-    SELECT id, title, parent_id, created_time, updated_time 
-    FROM folders
-  `).all();
-
-  const insertFolder = db.prepare(`
-    INSERT OR REPLACE INTO folders (id, title, parent_id, created_time, updated_time)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-  for (const f of folders) {
-    insertFolder.run(f.id, f.title || '이름 없음', f.parent_id || '', f.created_time || Date.now(), f.updated_time || Date.now());
+  // 1. Folders
+  const folderStmt = joplinDb.prepare("SELECT id, title, parent_id, created_time, updated_time FROM folders");
+  let folderCount = 0;
+  while (folderStmt.step()) {
+    const f = folderStmt.getAsObject();
+    runSql(`
+      INSERT OR REPLACE INTO folders (id, title, parent_id, created_time, updated_time)
+      VALUES (?, ?, ?, ?, ?)
+    `, [f.id, f.title || '이름 없음', f.parent_id || '', f.created_time || Date.now(), f.updated_time || Date.now()]);
+    folderCount++;
   }
+  folderStmt.free();
 
-  // 2. Import Notes
-  const notes = joplinDb.prepare(`
-    SELECT id, parent_id as folder_id, title, body, created_time, updated_time 
-    FROM notes 
-    WHERE deleted_time = 0
-  `).all();
-
-  const insertNote = db.prepare(`
-    INSERT OR REPLACE INTO notes (id, folder_id, title, body, image_text, created_time, updated_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const insertFts = db.prepare(`
-    INSERT INTO notes_fts (id, title, body, image_text)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  // Clear existing FTS for fresh sync
-  db.exec('DELETE FROM notes_fts');
-
-  let importedNotes = 0;
-  for (const n of notes) {
-    const title = n.title || '무제';
-    const body = n.body || '';
-    insertNote.run(n.id, n.folder_id || 'default', title, body, '', n.created_time || Date.now(), n.updated_time || Date.now());
-    insertFts.run(n.id, title, body, '');
-    importedNotes++;
-    if (onProgress && importedNotes % 500 === 0) {
-      onProgress({ current: importedNotes, total: notes.length });
-    }
+  // 2. Notes
+  const noteStmt = joplinDb.prepare("SELECT id, parent_id as folder_id, title, body, created_time, updated_time FROM notes WHERE deleted_time = 0");
+  let noteCount = 0;
+  while (noteStmt.step()) {
+    const n = noteStmt.getAsObject();
+    runSql(`
+      INSERT OR REPLACE INTO notes (id, folder_id, title, body, image_text, created_time, updated_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [n.id, n.folder_id || 'default', n.title || '무제', n.body || '', '', n.created_time || Date.now(), n.updated_time || Date.now()]);
+    noteCount++;
   }
+  noteStmt.free();
 
-  // 3. Import Resources (Images)
+  // 3. Resources (Images)
   const momoResDir = path.resolve(process.cwd(), 'data', 'resources');
   if (!fs.existsSync(momoResDir)) {
     fs.mkdirSync(momoResDir, { recursive: true });
   }
 
-  let importedResources = 0;
-  const resources = joplinDb.prepare(`
-    SELECT id, title, mime, filename, file_extension, ocr_text, ocr_status 
-    FROM resources
-  `).all();
-
-  const insertRes = db.prepare(`
-    INSERT OR REPLACE INTO resources (id, note_id, filename, mime, filepath, ocr_text, ocr_status, created_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const r of resources) {
+  const resStmt = joplinDb.prepare("SELECT id, title, mime, filename, file_extension, ocr_text, ocr_status FROM resources");
+  let resourceCount = 0;
+  while (resStmt.step()) {
+    const r = resStmt.getAsObject();
     const ext = r.file_extension ? `.${r.file_extension.replace('.', '')}` : '';
     const srcFileName = `${r.id}${ext}`;
     const srcPath = path.join(joplinResDir, srcFileName);
     const destPath = path.join(momoResDir, srcFileName);
 
     if (fs.existsSync(srcPath)) {
-      // Fast file copy or hardlink
       try {
         fs.copyFileSync(srcPath, destPath);
-      } catch (e) {
-        // Fallback
-      }
+      } catch (e) {}
     }
 
-    insertRes.run(
+    runSql(`
+      INSERT OR REPLACE INTO resources (id, note_id, filename, mime, filepath, ocr_text, ocr_status, created_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
       r.id,
       '',
       r.title || r.filename || srcFileName,
@@ -119,14 +92,17 @@ export function importFromJoplin(customDbPath = null, customResDir = null, onPro
       r.ocr_text || '',
       r.ocr_status || 0,
       Date.now()
-    );
-    importedResources++;
+    ]);
+    resourceCount++;
   }
+  resStmt.free();
+
+  joplinDb.close();
 
   return {
-    folderCount: folders.length,
-    noteCount: importedNotes,
-    resourceCount: importedResources,
+    folderCount,
+    noteCount,
+    resourceCount,
     timeTakenMs: Date.now() - startTime
   };
 }

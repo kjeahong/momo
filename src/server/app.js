@@ -2,10 +2,29 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { getDb, queryAll, queryOne, runSql, searchNotes, resetToCleanState } from './db.js';
 import { getDefaultJoplinPaths } from './importer.js';
 
-export async function createApp() {
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function getValidDistDir() {
+  const candidates = [
+    path.resolve(__dirname, '../../dist'),
+    path.resolve(__dirname, '../dist'),
+    path.resolve(process.cwd(), 'dist'),
+    path.resolve(process.cwd(), 'resources/app/dist')
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, 'index.html'))) {
+      return c;
+    }
+  }
+  return candidates[0];
+}
+
+export async function createApp(options = {}) {
   await getDb();
 
   const app = express();
@@ -13,7 +32,7 @@ export async function createApp() {
   app.use(express.json({ limit: '50mb' }));
 
   // Resources directory
-  const RES_DIR = path.resolve(process.cwd(), 'data', 'resources');
+  const RES_DIR = options.resDir || path.resolve(__dirname, '../../data/resources');
   if (!fs.existsSync(RES_DIR)) {
     fs.mkdirSync(RES_DIR, { recursive: true });
   }
@@ -117,17 +136,23 @@ export async function createApp() {
     res.json({ total: 0, current: 0, status: 'idle' });
   });
 
-  // Serve Frontend Dist
-  const DIST_DIR = path.resolve(process.cwd(), 'dist');
-  if (fs.existsSync(DIST_DIR)) {
-    app.use(express.static(DIST_DIR));
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api') || req.path.startsWith('/resources')) {
-        return next();
-      }
-      res.sendFile(path.join(DIST_DIR, 'index.html'));
-    });
-  }
+  // Serve Frontend Dist - Guaranteed Path
+  const DIST_DIR = options.distDir || getValidDistDir();
+  console.log(`Momo serving frontend from: ${DIST_DIR}`);
+  app.use(express.static(DIST_DIR));
+
+  // Catch-all to serve index.html for Single Page App
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/resources')) {
+      return next();
+    }
+    const indexFile = path.join(DIST_DIR, 'index.html');
+    if (fs.existsSync(indexFile)) {
+      res.sendFile(indexFile);
+    } else {
+      res.status(404).send(`index.html을 찾을 수 없습니다: ${indexFile}`);
+    }
+  });
 
   return app;
 }

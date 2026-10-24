@@ -22,11 +22,12 @@ let serverInstance = null;
 async function start() {
   log('start() entered');
   try {
-    log('Calling import(../server/app.js)...');
-    const { createApp } = await import('../server/app.js');
-    log('createApp imported successfully');
+    const distDir = path.resolve(__dirname, '../../dist');
+    const resDir = path.resolve(__dirname, '../../data/resources');
+    log(`Resolved distDir: ${distDir} (exists: ${fs.existsSync(distDir)})`);
 
-    const expressApp = await createApp();
+    const { createApp } = await import('../server/app.js');
+    const expressApp = await createApp({ distDir, resDir });
     log('expressApp created');
 
     const server = http.createServer(expressApp);
@@ -41,13 +42,19 @@ async function start() {
     const port = server.address().port;
     log(`Internal server running on port: ${port}`);
 
-    log('Creating BrowserWindow...');
+    // Custom Icon Path
+    let iconPath = path.resolve(__dirname, '../../build/icon.ico');
+    if (!fs.existsSync(iconPath)) {
+      iconPath = path.resolve(process.cwd(), 'build/icon.ico');
+    }
+
     mainWindow = new BrowserWindow({
       width: 1280,
       height: 820,
       minWidth: 960,
       minHeight: 640,
       title: 'Momo',
+      icon: iconPath,
       backgroundColor: '#ffffff',
       autoHideMenuBar: false,
       webPreferences: {
@@ -61,7 +68,6 @@ async function start() {
     log('URL loaded successfully into BrowserWindow!');
 
     mainWindow.on('closed', () => {
-      log('mainWindow closed');
       mainWindow = null;
     });
   } catch (err) {

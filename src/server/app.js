@@ -241,25 +241,40 @@ export async function createApp(options = {}) {
   });
 
   app.post('/api/notes', (req, res) => {
-    const { id, folder_id = 'default', title = '새로운 메모', body = '' } = req.body;
+    let { id, folder_id = 'default', title = '새로운 메모', body = '', is_todo = 0 } = req.body;
     const noteId = id || ('note_' + Date.now());
     const now = Date.now();
+
+    // Ensure target folder exists
+    const folderExists = queryOne('SELECT id FROM folders WHERE id = ?', [folder_id]);
+    if (!folderExists) {
+      const firstFolder = queryOne('SELECT id FROM folders ORDER BY order_index ASC LIMIT 1');
+      if (firstFolder) {
+        folder_id = firstFolder.id;
+      } else {
+        folder_id = 'default';
+        runSql(`
+          INSERT INTO folders (id, title, parent_id, order_index, created_time, updated_time)
+          VALUES ('default', '기본 노트북', '', 0, ?, ?)
+        `, [now, now]);
+      }
+    }
 
     const existing = queryOne('SELECT * FROM notes WHERE id = ?', [noteId]);
     if (existing) {
       runSql(`
         UPDATE notes 
-        SET folder_id = ?, title = ?, body = ?, updated_time = ?
+        SET folder_id = ?, title = ?, body = ?, is_todo = ?, updated_time = ?
         WHERE id = ?
-      `, [folder_id, title, body, now, noteId]);
+      `, [folder_id, title, body, is_todo ? 1 : (existing.is_todo || 0), now, noteId]);
     } else {
       runSql(`
-        INSERT INTO notes (id, folder_id, title, body, image_text, created_time, updated_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [noteId, folder_id, title, body, '', now, now]);
+        INSERT INTO notes (id, folder_id, title, body, image_text, created_time, updated_time, is_pinned, is_todo, todo_completed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)
+      `, [noteId, folder_id, title, body, '', now, now, is_todo ? 1 : 0]);
     }
 
-    res.json({ id: noteId, folder_id, title, body, updated_time: now });
+    res.json({ id: noteId, folder_id, title, body, is_todo: is_todo ? 1 : 0, updated_time: now });
   });
 
   app.delete('/api/notes/:id', (req, res) => {

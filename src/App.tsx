@@ -4,7 +4,7 @@ import {
   Eye, Edit3, Columns, Settings, Image as ImageIcon, 
   Bold, Italic, Link, Code, List, ListOrdered, CheckSquare, 
   Minus, RefreshCw, Database, Check, Pin, ChevronRight, ChevronDown,
-  MoreVertical, Edit2, ArrowUp, ArrowDown, Copy
+  MoreVertical, Edit2, ArrowUp, ArrowDown, Copy, FilePlus
 } from 'lucide-react';
 import { marked } from 'marked';
 import { SearchBar } from './components/SearchBar';
@@ -79,12 +79,15 @@ export default function App() {
     title: ''
   });
 
+  // Top Menu Bar Dropdown
+  const [topMenuDropdown, setTopMenuDropdown] = useState<'file' | 'note' | null>(null);
+
   // Joplin-style Right-Click Context Menu
   const [contextMenu, setContextMenu] = useState<{
     isOpen: boolean;
     x: number;
     y: number;
-    type: 'folder' | 'note';
+    type: 'folder' | 'note' | 'list';
     targetFolder?: FolderItem | null;
     targetNote?: Note | null;
   }>({
@@ -103,6 +106,7 @@ export default function App() {
     position: 'before' | 'after' | 'inside';
   } | null>(null);
 
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDraggingSidebar = useRef(false);
   const isDraggingNoteList = useRef(false);
@@ -184,6 +188,7 @@ export default function App() {
   useEffect(() => {
     const handleCloseMenu = () => {
       setContextMenu(prev => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+      setTopMenuDropdown(null);
     };
     window.addEventListener('click', handleCloseMenu);
     window.addEventListener('contextmenu', handleCloseMenu);
@@ -325,24 +330,92 @@ export default function App() {
   };
 
   // Create new note
-  const handleCreateNote = async (isTodo = 0) => {
-    const targetFolder = selectedFolderId || (folders[0]?.id ?? 'default');
+  const handleCreateNote = async (isTodo = 0, folderId?: string) => {
+    // 1. Flush any pending save before creating/switching
+    if (saveTimer.current && activeNote) {
+      clearTimeout(saveTimer.current);
+      try {
+        await fetch('/api/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(activeNote)
+        });
+      } catch (e) {}
+    }
+
+    // 2. Resolve destination folder
+    let targetFolder = folderId !== undefined ? folderId : selectedFolderId;
+    if (!targetFolder || targetFolder === '') {
+      targetFolder = folders.length > 0 ? folders[0].id : 'default';
+    }
+
+    // 3. Clear search so the newly created note is immediately visible
+    if (searchQuery) {
+      setSearchQuery('');
+    }
+
+    // 4. Switch folder selection if a specific folder was targeted
+    if (folderId && selectedFolderId !== folderId) {
+      setSelectedFolderId(folderId);
+    }
+
     const newNote = {
       folder_id: targetFolder,
       title: isTodo ? '새로운 할 일' : '새로운 메모',
-      body: isTodo ? '- [ ] 해야 할 일을 적으세요\n' : ''
+      body: isTodo ? '- [ ] 해야 할 일을 적으세요\n' : '',
+      is_todo: isTodo ? 1 : 0
     };
 
-    const res = await fetch('/api/notes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newNote)
-    });
-    const created = await res.json();
-    await loadFolders();
-    await loadNotes(searchQuery, selectedFolderId);
-    setSelectedNoteId(created.id);
+    try {
+      const res = await fetch('/api/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newNote)
+      });
+      const created = await res.json();
+      await loadFolders();
+      await loadNotes('', folderId !== undefined ? folderId : selectedFolderId);
+      setSelectedNoteId(created.id);
+
+      // Auto-focus title input for immediate typing!
+      setTimeout(() => {
+        if (titleInputRef.current) {
+          titleInputRef.current.focus();
+          titleInputRef.current.select();
+        }
+      }, 50);
+    } catch (err) {
+      console.error('Failed to create note', err);
+    }
   };
+
+  // Global Keyboard Shortcuts (Ctrl+N: 새 메모, Ctrl+T: 새 할 일, Ctrl+S: 저장, Ctrl+F: 검색)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (folderModal.isOpen || noteRenameModal.isOpen || isJoplinModalOpen) return;
+
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (cmdOrCtrl && e.key.toLowerCase() === 'n' && !e.shiftKey) {
+        e.preventDefault();
+        handleCreateNote(0);
+      } else if (cmdOrCtrl && (e.key.toLowerCase() === 't' || (e.key.toLowerCase() === 'n' && e.shiftKey))) {
+        e.preventDefault();
+        handleCreateNote(1);
+      } else if (cmdOrCtrl && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        const searchInput = document.querySelector('input[placeholder*="검색"]') as HTMLInputElement;
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.select();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedFolderId, folders, folderModal, noteRenameModal, isJoplinModalOpen, searchQuery, activeNote]);
 
   // Auto-save active note
   const saveTimer = useRef<NodeJS.Timeout | null>(null);
@@ -493,14 +566,131 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-white text-slate-800 font-sans">
       {/* 1. TOP CLASSIC JOPLIN MENU BAR */}
-      <div className="h-6 bg-[#f0f2f5] border-b border-[#d8dce2] px-3 flex items-center gap-4 text-[11px] text-[#444] shrink-0 font-medium select-none">
-        <span className="hover:text-blue-600 cursor-pointer">파일(F)</span>
-        <span className="hover:text-blue-600 cursor-pointer">편집(E)</span>
-        <span className="hover:text-blue-600 cursor-pointer">보기(V)</span>
-        <span className="hover:text-blue-600 cursor-pointer">노트(N)</span>
-        <span className="hover:text-blue-600 cursor-pointer">도구(T)</span>
-        <span className="hover:text-blue-600 cursor-pointer">도움말(H)</span>
-        <div className="ml-auto text-[10px] text-slate-400 font-mono">Momo v0.3.0 (Joplin Pro Edition)</div>
+      <div className="h-6 bg-[#f0f2f5] border-b border-[#d8dce2] px-3 flex items-center gap-4 text-[11px] text-[#444] shrink-0 font-medium select-none relative">
+        <div className="relative">
+          <span 
+            onClick={(e) => {
+              e.stopPropagation();
+              setTopMenuDropdown(prev => prev === 'file' ? null : 'file');
+            }}
+            className="hover:text-blue-600 cursor-pointer px-1.5 py-0.5 rounded hover:bg-[#e2e6eb]"
+          >
+            파일(F)
+          </span>
+          {topMenuDropdown === 'file' && (
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="absolute left-0 top-6 w-48 bg-white border border-[#ced4da] shadow-lg rounded py-1 z-50 text-xs text-slate-700"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(0);
+                  setTopMenuDropdown(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer"
+              >
+                <span>새 메모</span>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+N</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(1);
+                  setTopMenuDropdown(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer"
+              >
+                <span>새 할 일</span>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+T</span>
+              </button>
+              <div className="h-[1px] bg-slate-100 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setFolderModal({ isOpen: true, mode: 'create', targetFolder: null, title: '' });
+                  setTopMenuDropdown(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] cursor-pointer"
+              >
+                새 노트북
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsJoplinModalOpen(true);
+                  setTopMenuDropdown(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] cursor-pointer"
+              >
+                Joplin 데이터 가져오기
+              </button>
+            </div>
+          )}
+        </div>
+
+        <span className="hover:text-blue-600 cursor-pointer px-1.5 py-0.5">편집(E)</span>
+        <span className="hover:text-blue-600 cursor-pointer px-1.5 py-0.5">보기(V)</span>
+
+        <div className="relative">
+          <span 
+            onClick={(e) => {
+              e.stopPropagation();
+              setTopMenuDropdown(prev => prev === 'note' ? null : 'note');
+            }}
+            className="hover:text-blue-600 cursor-pointer px-1.5 py-0.5 rounded hover:bg-[#e2e6eb]"
+          >
+            노트(N)
+          </span>
+          {topMenuDropdown === 'note' && (
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="absolute left-0 top-6 w-48 bg-white border border-[#ced4da] shadow-lg rounded py-1 z-50 text-xs text-slate-700"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(0);
+                  setTopMenuDropdown(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer font-medium"
+              >
+                <span>새 메모</span>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+N</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(1);
+                  setTopMenuDropdown(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer"
+              >
+                <span>새 할 일</span>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+T</span>
+              </button>
+              {activeNote && (
+                <>
+                  <div className="h-[1px] bg-slate-100 my-1" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDeleteNote(activeNote.id);
+                      setTopMenuDropdown(null);
+                    }}
+                    className="w-full text-left px-3 py-1.5 hover:bg-rose-50 text-rose-600 cursor-pointer"
+                  >
+                    현재 메모 삭제
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        <span className="hover:text-blue-600 cursor-pointer px-1.5 py-0.5">도구(T)</span>
+        <span className="hover:text-blue-600 cursor-pointer px-1.5 py-0.5">도움말(H)</span>
+        <div className="ml-auto text-[10px] text-slate-400 font-mono">Momo (Joplin Pro Edition)</div>
       </div>
 
       {/* 2. JOPLIN ACTION TOOLBAR */}
@@ -600,7 +790,19 @@ export default function App() {
             {/* All Notes Folder */}
             <div
               onClick={() => handleSelectFolder('')}
-              className={`flex items-center justify-between px-2.5 py-1.5 rounded cursor-pointer transition-colors ${
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setContextMenu({
+                  isOpen: true,
+                  x: e.clientX,
+                  y: e.clientY,
+                  type: 'list',
+                  targetFolder: null,
+                  targetNote: null
+                });
+              }}
+              className={`group flex items-center justify-between px-2.5 py-1.5 rounded cursor-pointer transition-colors ${
                 selectedFolderId === '' ? 'bg-[#434c5e] text-white font-medium' : 'hover:bg-[#3b4252] text-[#d8dee9]'
               }`}
             >
@@ -608,9 +810,22 @@ export default function App() {
                 <FileText size={14} className={selectedFolderId === '' ? 'text-[#88c0d0]' : 'text-slate-400'} />
                 <span className="truncate">전체 메모</span>
               </div>
-              <span className="text-[11px] opacity-60 font-mono">
-                {notes.length}
-              </span>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="text-[11px] opacity-60 font-mono mr-1">
+                  {notes.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCreateNote(0);
+                  }}
+                  title="새 메모 작성 (Ctrl+N)"
+                  className="opacity-0 group-hover:opacity-100 p-0.5 text-[#88c0d0] hover:text-white hover:bg-[#434c5e] rounded transition-colors"
+                >
+                  <FilePlus size={11} />
+                </button>
+              </div>
             </div>
 
             {/* Folder Tree Items */}
@@ -680,6 +895,18 @@ export default function App() {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          handleCreateNote(0, folder.id);
+                        }}
+                        title="이 노트북에 새 메모 작성"
+                        className="opacity-0 group-hover:opacity-100 p-0.5 text-[#88c0d0] hover:text-white hover:bg-[#434c5e] rounded transition-colors"
+                      >
+                        <FilePlus size={11} />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           handleReorderFolder(folder.id, 'up');
                         }}
                         disabled={idx === 0}
@@ -711,7 +938,7 @@ export default function App() {
                         title="하위 노트북 추가"
                         className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-[#88c0d0] rounded"
                       >
-                        <Plus size={11} />
+                        <FolderPlus size={11} />
                       </button>
 
                       <button
@@ -792,6 +1019,17 @@ export default function App() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  handleCreateNote(0, sub.id);
+                                }}
+                                title="이 노트북에 새 메모 작성"
+                                className="opacity-0 group-hover:opacity-100 p-0.5 text-[#88c0d0] hover:text-white"
+                              >
+                                <FilePlus size={10} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setFolderModal({ isOpen: true, mode: 'rename', targetFolder: sub, title: sub.title });
                                 }}
                                 title="이름 변경"
@@ -850,16 +1088,61 @@ export default function App() {
           className="bg-white flex flex-col shrink-0 border-r border-[#d8dce2]"
         >
           {/* Note List Header */}
-          <div className="h-8 border-b border-[#e5e7eb] px-3 flex items-center justify-between text-xs text-slate-500 bg-[#f8f9fa] select-none">
-            <span className="font-semibold text-slate-700 truncate">{currentFolderTitle}</span>
-            <span className="text-[11px] font-mono text-slate-400">{notes.length}개</span>
+          <div className="h-9 border-b border-[#e5e7eb] px-3 flex items-center justify-between text-xs text-slate-500 bg-[#f8f9fa] select-none shrink-0">
+            <div className="flex items-center gap-1.5 truncate flex-1 min-w-0">
+              <span className="font-bold text-slate-800 truncate">{currentFolderTitle}</span>
+              <span className="text-[11px] font-mono text-slate-400">({notes.length})</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleCreateNote(0)}
+                className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded text-[11px] font-semibold transition-colors shadow-2xs cursor-pointer"
+                title="이 목록에 새 메모 작성 (Ctrl+N)"
+              >
+                <Plus size={12} className="text-blue-600" />
+                <span>새 메모</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCreateNote(1)}
+                className="flex items-center gap-1 px-1.5 py-0.5 hover:bg-slate-200 text-slate-600 rounded text-[11px] transition-colors cursor-pointer"
+                title="새 할 일 작성 (Ctrl+T)"
+              >
+                <CheckSquare size={12} className="text-emerald-600" />
+              </button>
+            </div>
           </div>
 
           {/* Notes List Scroll Area */}
-          <div className="flex-1 overflow-y-auto divide-y divide-[#f1f3f5]">
+          <div 
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu({
+                isOpen: true,
+                x: e.clientX,
+                y: e.clientY,
+                type: 'list',
+                targetFolder: null,
+                targetNote: null
+              });
+            }}
+            className="flex-1 overflow-y-auto divide-y divide-[#f1f3f5]"
+          >
             {notes.length === 0 ? (
-              <div className="p-6 text-center text-slate-400 text-xs">
-                {searchQuery ? '일치하는 메모가 없습니다.' : '작성된 메모가 없습니다. [+ 새 메모]를 눌러보세요.'}
+              <div className="p-8 text-center text-slate-400 text-xs flex flex-col items-center justify-center h-56 gap-3">
+                <FileText size={32} className="text-slate-300" />
+                <p>{searchQuery ? '일치하는 메모가 없습니다.' : `'${currentFolderTitle}'에 작성된 메모가 없습니다.`}</p>
+                {!searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => handleCreateNote(0)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Plus size={13} />
+                    <span>새 메모 작성하기</span>
+                  </button>
+                )}
               </div>
             ) : (
               notes.map(note => {
@@ -986,9 +1269,16 @@ export default function App() {
               {/* Note Title Input */}
               <div className="pt-3 px-5 pb-2 flex items-center justify-between border-b border-[#e5e7eb] gap-4">
                 <input
+                  ref={titleInputRef}
                   type="text"
                   value={activeNote.title}
                   onChange={e => handleNoteChange({ title: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      textareaRef.current?.focus();
+                    }
+                  }}
                   placeholder="제목 없음"
                   className="w-full text-lg font-bold text-slate-900 placeholder-slate-300 focus:outline-none select-text"
                 />
@@ -1123,9 +1413,17 @@ export default function App() {
               </div>
             </>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-xs gap-2 select-none">
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-xs gap-3 select-none">
               <FileText size={36} className="text-slate-300" />
-              <p>선택된 메모가 없습니다. [+ 새 메모]를 눌러 작성해 보세요.</p>
+              <p className="text-slate-500 font-medium">선택된 메모가 없습니다.</p>
+              <button
+                type="button"
+                onClick={() => handleCreateNote(0)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              >
+                <Plus size={13} />
+                <span>+ 새 메모 작성하기 (Ctrl+N)</span>
+              </button>
             </div>
           )}
         </div>
@@ -1211,10 +1509,10 @@ export default function App() {
       {contextMenu.isOpen && (
         <div
           style={{
-            left: `${Math.min(contextMenu.x, window.innerWidth - 190)}px`,
-            top: `${Math.min(contextMenu.y, window.innerHeight - 220)}px`
+            left: `${Math.min(contextMenu.x, window.innerWidth - 200)}px`,
+            top: `${Math.min(contextMenu.y, window.innerHeight - 300)}px`
           }}
-          className="fixed z-50 min-w-[170px] bg-white border border-[#ced4da] rounded shadow-xl py-1 text-xs text-slate-700 select-none"
+          className="fixed z-50 min-w-[180px] bg-white border border-[#ced4da] rounded shadow-xl py-1 text-xs text-slate-700 select-none"
           onClick={(e) => e.stopPropagation()}
         >
           {contextMenu.type === 'folder' && contextMenu.targetFolder && (
@@ -1222,6 +1520,35 @@ export default function App() {
               <div className="px-3 py-1 font-semibold text-[11px] text-slate-400 border-b border-slate-100 truncate max-w-[200px]">
                 📁 {contextMenu.targetFolder.title}
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(0, contextMenu.targetFolder!.id);
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer font-medium"
+              >
+                <div className="flex items-center gap-2">
+                  <FilePlus size={13} className="text-blue-600" />
+                  <span>새 메모 (이 노트북)</span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+N</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(1, contextMenu.targetFolder!.id);
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <CheckSquare size={13} className="text-emerald-600" />
+                  <span>새 할 일 (이 노트북)</span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+T</span>
+              </button>
+              <div className="h-[1px] bg-slate-100 my-1" />
               <button
                 type="button"
                 onClick={() => {
@@ -1251,7 +1578,7 @@ export default function App() {
                 }}
                 className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center gap-2 cursor-pointer"
               >
-                <Plus size={13} className="text-blue-500" />
+                <FolderPlus size={13} className="text-blue-500" />
                 <span>새 하위 노트북</span>
               </button>
               <button
@@ -1296,6 +1623,35 @@ export default function App() {
               <div className="px-3 py-1 font-semibold text-[11px] text-slate-400 border-b border-slate-100 truncate max-w-[200px]">
                 📝 {contextMenu.targetNote.title || '새 메모'}
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(0, contextMenu.targetNote?.folder_id);
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer font-medium"
+              >
+                <div className="flex items-center gap-2">
+                  <FilePlus size={13} className="text-blue-600" />
+                  <span>새 메모 작성</span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+N</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(1, contextMenu.targetNote?.folder_id);
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <CheckSquare size={13} className="text-emerald-600" />
+                  <span>새 할 일 작성</span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+T</span>
+              </button>
+              <div className="h-[1px] bg-slate-100 my-1" />
               <button
                 type="button"
                 onClick={() => {
@@ -1344,6 +1700,54 @@ export default function App() {
               >
                 <Trash2 size={13} />
                 <span>메모 삭제</span>
+              </button>
+            </>
+          )}
+
+          {contextMenu.type === 'list' && (
+            <>
+              <div className="px-3 py-1 font-semibold text-[11px] text-slate-400 border-b border-slate-100 truncate">
+                {currentFolderTitle}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(0);
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer font-medium"
+              >
+                <div className="flex items-center gap-2">
+                  <FilePlus size={13} className="text-blue-600" />
+                  <span>새 메모 작성</span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+N</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNote(1);
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center justify-between cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <CheckSquare size={13} className="text-emerald-600" />
+                  <span>새 할 일 작성</span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Ctrl+T</span>
+              </button>
+              <div className="h-[1px] bg-slate-100 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setFolderModal({ isOpen: true, mode: 'create', targetFolder: null, title: '' });
+                  setContextMenu(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-[#e8f0fe] hover:text-[#1a73e8] flex items-center gap-2 cursor-pointer"
+              >
+                <FolderPlus size={13} className="text-amber-500" />
+                <span>새 노트북 만들기</span>
               </button>
             </>
           )}
